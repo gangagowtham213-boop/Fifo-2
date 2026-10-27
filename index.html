@@ -1,0 +1,238 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Distributed Snapshot Simulator</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,sans-serif;background:#f1f5fb;color:#17243b}
+header{background:linear-gradient(120deg,#101d40,#2358a5);color:white;text-align:center;padding:32px 15px}
+header h1{margin:0 0 10px;font-size:clamp(23px,4vw,34px)}
+header p{color:#dbeafe;margin:0}
+main{max-width:1000px;margin:24px auto;padding:0 14px}
+.card{background:white;border-radius:14px;padding:22px;margin-bottom:20px;box-shadow:0 4px 18px #15284b0d}
+h2{margin-top:0;color:#1e4381}
+.info{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.info div{padding:15px;background:#edf3ff;border-radius:9px}
+.info strong,.info span{display:block;margin-bottom:7px}
+.network{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:22px 0}
+.process{border:2px solid #cbd5e1;border-radius:12px;padding:18px 8px;text-align:center;background:#f8fafc;transition:.3s}
+.process.active{border-color:#168653;background:#e7f8ef}
+.process h3{margin:0 0 12px}
+.status{font-size:13px;color:#64748b}
+.channel{background:#eef4ff;border-radius:9px;padding:13px;margin:10px 0;overflow-wrap:anywhere}
+button{border:0;border-radius:8px;padding:12px 17px;color:white;background:#245ac5;font-weight:bold;cursor:pointer;margin:4px}
+button:hover{filter:brightness(.9)}
+button:disabled{opacity:.45;cursor:not-allowed}
+.reset{background:#c2414b}
+#message{padding:12px;background:#f1f5f9;border-radius:8px;line-height:1.5}
+#results li,#logs li{margin:10px 0;overflow-wrap:anywhere}
+.tag{display:inline-block;background:#d1fae5;color:#065f46;padding:4px 9px;border-radius:20px;font-size:12px}
+footer{text-align:center;padding:20px;color:#64748b}
+@media(max-width:600px){.network,.info{grid-template-columns:1fr}.card{padding:16px}}
+</style>
+</head>
+<body>
+<header>
+<h1>Distributed Snapshot Simulator</h1>
+<p>Chandy–Lamport Algorithm | FIFO Channels</p>
+</header>
+<main>
+<section class="card">
+<h2>System Overview</h2>
+<p>Observe how distributed processes record their local states and in-transit messages to capture a consistent global state.</p>
+<div class="info">
+<div><span>Processes</span><strong>3 Nodes</strong></div>
+<div><span>Communication</span><strong>FIFO Channels</strong></div>
+<div><span>Algorithm</span><strong>Chandy–Lamport</strong></div>
+</div>
+</section>
+
+<section class="card">
+<h2>Distributed Network</h2>
+<div class="network" id="network"></div>
+<h3>Communication Channels</h3>
+<div id="channels"></div>
+<button id="start">Start Snapshot</button>
+<button id="next" disabled>Next Step →</button>
+<button class="reset" id="reset">Reset Simulation</button>
+<p id="message" role="status">Ready. Click Start Snapshot to begin.</p>
+</section>
+
+<section class="card">
+<h2>Captured Global State</h2>
+<div id="results">The global state will appear here after recording begins.</div>
+</section>
+
+<section class="card">
+<h2>Algorithm Execution Log</h2>
+<ol id="logs"><li>System initialized. Waiting for snapshot.</li></ol>
+</section>
+</main>
+<footer>Distributed Systems | Mini Project</footer>
+
+<script>
+const initial=[
+ {from:0,to:1,messages:["A"]},
+ {from:1,to:2,messages:["B"]},
+ {from:2,to:0,messages:[]}
+];
+let channels,states,recorded,channelStates,log,queue,started,finished;
+
+const $=id=>document.getElementById(id);
+const pname=i=>"P"+(i+1);
+
+function addLog(s){
+ log.push(s);
+ $("logs").innerHTML=log.map(x=>"<li>"+x+"</li>").join("");
+}
+
+function init(){
+ channels=initial.map(c=>({...c,messages:[...c.messages]}));
+ states=[10,20,30];
+ recorded=[false,false,false];
+ channelStates={};
+ log=["System initialized. P1=10, P2=20, P3=30. FIFO channels contain A and B."];
+ queue=[];
+ started=false;
+ finished=false;
+ $("start").disabled=false;
+ $("next").disabled=true;
+ $("message").textContent="Ready. Click Start Snapshot to begin.";
+ render();
+}
+
+function record(i){
+ if(recorded[i])return;
+ recorded[i]=true;
+ addLog(pname(i)+" records its local state: "+states[i]+".");
+
+ // Begin recording all incoming channels other than the
+ // channel on which the first marker arrived.
+ channels.forEach(c=>{
+   if(c.to===i){
+     const key=c.from+"-"+c.to;
+     if(channelStates[key]===undefined)channelStates[key]=[];
+   }
+ });
+
+ // Send a marker on every outgoing channel.
+ channels.forEach(c=>{
+   if(c.from===i){
+     c.messages.push("MARKER");
+     queue.push({type:"marker",from:c.from,to:c.to});
+     addLog("Marker sent from "+pname(c.from)+" to "+pname(c.to)+".");
+   }
+ });
+}
+
+function start(){
+ if(started)return;
+ started=true;
+ $("start").disabled=true;
+ $("next").disabled=false;
+ record(0);
+ $("message").textContent="P1 recorded its local state and sent marker messages.";
+ render();
+}
+
+function step(){
+ if(!started||finished)return;
+
+ // FIFO: deliver the head message of a channel.
+ let selected=null;
+ for(const c of channels){
+   if(c.messages.length){
+     selected=c;
+     break;
+   }
+ }
+ if(!selected){
+   finish();
+   return;
+ }
+
+ const msg=selected.messages.shift();
+ const from=selected.from,to=selected.to;
+ const key=from+"-"+to;
+
+ if(msg==="MARKER"){
+   addLog(pname(to)+" receives MARKER from "+pname(from)+".");
+   if(!recorded[to]){
+     // The first marker triggers the receiver's local snapshot.
+     record(to);
+     // The channel that delivered this marker is recorded empty.
+     channelStates[key]=[];
+   }else{
+     // Stop recording this incoming channel at its marker.
+     if(channelStates[key]===undefined)channelStates[key]=[];
+   }
+ }else{
+   addLog("Message "+msg+" delivered from "+pname(from)+" to "+pname(to)+".");
+   // Record messages received on a channel while its state
+   // is being captured, until the marker on that channel arrives.
+   if(channelStates[key]!==undefined){
+     channelStates[key].push(msg);
+   }
+ }
+
+ render();
+
+ if(recorded.every(Boolean)&&
+    channels.every(c=>!c.messages.includes("MARKER"))){
+   finish();
+ }else{
+   $("message").textContent="Step completed. Click Next Step to continue the snapshot.";
+ }
+}
+
+function finish(){
+ finished=true;
+ $("next").disabled=true;
+ $("message").textContent="Snapshot recording completed. Review the captured global state below.";
+ addLog("Snapshot completed. All process states and recorded channel states are displayed.");
+ render();
+}
+
+function render(){
+ $("network").innerHTML=states.map((s,i)=>`
+ <div class="process ${recorded[i]?"active":""}">
+ <h3>Process ${pname(i)}</h3>
+ <p>Local State: <strong>${s}</strong></p>
+ <span class="status">${recorded[i]?"✓ State Recorded":"Waiting for marker"}</span>
+ </div>`).join("");
+
+ $("channels").innerHTML=channels.map(c=>`
+ <div class="channel"><strong>${pname(c.from)} → ${pname(c.to)}</strong><br>
+ Messages in FIFO queue: [${c.messages.join(", ")||"Empty"}]</div>`).join("");
+
+ let html="<h3>Local Process States</h3><ul>";
+ states.forEach((s,i)=>{
+   html+="<li>"+pname(i)+": "+(recorded[i]?
+   '<span class="tag">Recorded</span> Local state = '+s:
+   "Not recorded")+"</li>";
+ });
+ html+="</ul><h3>Recorded Channel States</h3><ul>";
+ Object.keys(channelStates).forEach(key=>{
+   const [from,to]=key.split("-").map(Number);
+   html+="<li>Channel "+pname(from)+" → "+pname(to)+": ["+
+      channelStates[key].join(", ")+"]</li>";
+ });
+ html+="</ul>";
+ if(finished){
+   html+="<h3>Global State</h3><p>Local states: ("+
+      states.map((s,i)=>recorded[i]?s:"?").join(", ")+
+      "). Channel states are listed above.</p>";
+ }
+ $("results").innerHTML=html;
+}
+
+$("start").addEventListener("click",start);
+$("next").addEventListener("click",step);
+$("reset").addEventListener("click",init);
+init();
+</script>
+</body>
+</html>
